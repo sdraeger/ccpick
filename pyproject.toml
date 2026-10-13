@@ -1,0 +1,30 @@
+[project]
+name = "ccpick"
+version = "0.1.0"
+description = "Browse and attach to Claude Code background sessions on your SSH hosts"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Simon Dräger" }]
+requires-python = ">=3.10"
+dependencies = ["textual>=8.2"]
+keywords = ["claude", "claude-code", "ssh", "tui", "agents"]
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+]
+
+[project.urls]
+Repository = "https://github.com/sdraeger/ccpick"
+
+[project.scripts]
+ccpick = "ccpick.app:main"
+
+[dependency-groups]
+dev = ["pytest>=9"]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
