@@ -4,7 +4,7 @@ Browse and attach to [Claude Code](https://code.claude.com/docs) background sess
 
 ![ccpick listing sessions on three hosts](docs/screenshot.svg)
 
-Claude Code's agent view (`claude agents`) lists the background sessions on the machine it runs on. ccpick asks each of your SSH hosts for that list, shows them together, and attaches to the one you pick over SSH. Sessions keep running on their host when you detach or your connection drops.
+Claude Code's agent view (`claude agents`) lists the background sessions on the machine it runs on. ccpick asks each of your SSH hosts for that list, shows them together, and attaches to the one you pick over SSH. With [claude-swap](https://github.com/realiti4/claude-swap) on a host, it lists every account's sessions and lets you choose the account for new ones. Sessions keep running on their host when you detach or your connection drops.
 
 ## Requirements
 
@@ -24,19 +24,29 @@ pipx install git+https://github.com/sdraeger/ccpick
 ```sh
 ccpick gpu1 devbox                 # sessions on these hosts
 export CCPICK_HOSTS="gpu1 devbox"  # default hosts
-ccpick --list gpu1                 # tab-separated: host, id, state, name, cwd
+ccpick --list gpu1                 # tab-separated: host, account, id, state, name, cwd
 ```
 
 | Key | Action |
 | :- | :- |
-| typing | filter by host, state, name or directory (every word must match) |
+| typing | filter by host, account, state, name or directory (every word must match) |
 | `↑` `↓` | move |
 | `Enter` | attach to the session |
-| `Ctrl+N` | open agent view on the selected host, for example to start a session |
+| `Ctrl+N` | start a session on the selected host: opens its agent view, after asking which account when it has several |
 | `Ctrl+R` | refresh |
 | `Esc` | quit |
 
 In an attached session, `Ctrl+Z` returns to ccpick and `←` opens the host's agent view (`Esc` there also returns to ccpick). The session keeps running either way.
+
+## Multiple accounts (cswap)
+
+If a host has [claude-swap](https://github.com/realiti4/claude-swap) (`cswap`), each of its accounts has its own list of background sessions there. ccpick then:
+
+- lists the sessions of every account, with the account in its own column
+- attaches through `cswap run <n> -- attach <id>`, so a session keeps its account
+- asks which account a new session should use, showing each account's 5-hour and 7-day usage and which one is the host's default login
+
+Listing an account that isn't the default runs `cswap run <n>`, which sets up that account's session profile on the host the first time. Hosts without cswap use plain `claude`.
 
 ## Notes
 
