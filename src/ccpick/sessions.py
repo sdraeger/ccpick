@@ -7,11 +7,14 @@ import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import NamedTuple, Optional
 
 SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
 # What an interactive shell without a terminal (`$SHELL -lic` over ssh) prints to stderr.
 JOB_CONTROL_NOISE = re.compile(r"cannot set terminal process group|no job control in this shell")
+# Lists past conversations on the host; see history.py.
+HISTORY_SCRIPT = Path(__file__).with_name("history.py").read_text()
 # Prints "{}" when the host has no cswap, so ccpick falls back to plain `claude`.
 ACCOUNTS_CMD = "command -v cswap >/dev/null && cswap list --json || echo '{}'"
 
@@ -26,8 +29,8 @@ class Account(NamedTuple):
 class Session(NamedTuple):
     host: str
     account: Account
-    id: str  # "" for an unreachable host
-    state: str
+    id: str  # short background id; full session id for a past conversation; "" if unreachable
+    state: str  # agent view state, "past", or "unreachable"
     name: str
     cwd: str
     started: int  # ms since epoch
@@ -58,18 +61,20 @@ def parse_json(out: str):
     return None
 
 
-def ssh_run(host: str, cmd: str, timeout: int = 30) -> Optional[subprocess.CompletedProcess]:
-    """cmd on host without a terminal, or None on timeout."""
+def ssh_run(host: str, cmd: str, timeout: int = 30,
+            input: Optional[str] = None) -> Optional[subprocess.CompletedProcess]:
+    """cmd on host without a terminal, fed input on stdin; None on timeout."""
+    stdin = {"input": input} if input is not None else {"stdin": subprocess.DEVNULL}
     try:
         return subprocess.run(["ssh", *SSH_OPTS, host, remote(cmd)], capture_output=True, text=True,
-                              timeout=timeout, stdin=subprocess.DEVNULL)
+                              timeout=timeout, **stdin)
     except subprocess.TimeoutExpired:
         return None
 
 
-def run_json(host: str, cmd: str):
+def run_json(host: str, cmd: str, input: Optional[str] = None):
     """Parsed JSON from cmd on host, or None if ssh fails or prints no JSON."""
-    r = ssh_run(host, cmd)
+    r = ssh_run(host, cmd, input=input)
     return parse_json(r.stdout) if r else None
 
 
@@ -78,9 +83,23 @@ def switch(host: str, account: Account) -> tuple:
     r = ssh_run(host, f"cswap switch {account.slot}", timeout=60)
     if r is None:
         return False, "timed out"
+    return r.returncode == 0, last_line(r)
+
+
+def last_line(r: subprocess.CompletedProcess) -> str:
     lines = [line for line in (r.stdout + r.stderr).splitlines()
              if line.strip() and not JOB_CONTROL_NOISE.search(line)]
-    return r.returncode == 0, lines[-1] if lines else ""
+    return lines[-1] if lines else ""
+
+
+def resume_background(s: Session) -> tuple:
+    """Continue a past conversation as a background session; (short id or None, last output line)."""
+    cmd = claude_cmd(s.account, f"--bg --resume {shlex.quote(s.id)}")
+    r = ssh_run(s.host, f"cd {shlex.quote(s.cwd)} && {cmd}" if s.cwd else cmd, timeout=120)
+    if r is None:
+        return None, "timed out"
+    m = re.search(r"claude attach (\S+)", r.stdout)
+    return (m.group(1) if m else None), last_line(r)
 
 
 def usage_text(u: dict) -> str:
@@ -106,15 +125,44 @@ def to_sessions(host: str, account: Account, data) -> list:
             for s in sorted(bg, key=lambda s: -s.get("startedAt", 0))]
 
 
+def to_past(host: str, accounts: list, data, running: set) -> list:
+    """Past conversations on one host, newest first, under the account whose history holds them.
+
+    Skips conversations already running in the background (by short id) and duplicates.
+    """
+    if not isinstance(data, list):
+        return []
+    default = next((a for a in accounts if a.active), accounts[0])
+    by_slot = {str(a.slot): a for a in accounts if a.slot}
+    out, seen = [], set(running)
+    for c in sorted(data, key=lambda c: -c.get("mtime", 0)):
+        sid, where = c.get("sessionId", ""), c.get("account")
+        account = default if where == "default" else by_slot.get(where)
+        # `cswap run` uses the default config dir for the default account, not its old profile.
+        if account is None or (where != "default" and account.active) or sid[:8] in seen:
+            continue
+        seen.add(sid[:8])
+        out.append(Session(host, account, sid, "past", c.get("title", ""), c.get("cwd", ""),
+                           c.get("mtime", 0)))
+    return out
+
+
 def gather(hosts: list):
-    """(sessions, {host: accounts or None}) for all hosts, queried in parallel."""
+    """(sessions, {host: accounts or None}) for all hosts, queried in parallel.
+
+    Background sessions come first, then past conversations, then unreachable hosts.
+    """
     with ThreadPoolExecutor() as pool:
         accounts = dict(zip(hosts, pool.map(lambda h: to_accounts(run_json(h, ACCOUNTS_CMD)), hosts)))
-        jobs = [(h, a) for h in hosts for a in accounts[h] or []]
+        up = [h for h in hosts if accounts[h] is not None]
+        jobs = [(h, a) for h in up for a in accounts[h]]
         lists = pool.map(lambda j: run_json(j[0], claude_cmd(j[1], "agents --json --all")), jobs)
-        sessions = [s for (h, a), data in zip(jobs, lists) for s in to_sessions(h, a, data)]
+        histories = pool.map(lambda h: run_json(h, "python3 -", input=HISTORY_SCRIPT), up)
+        live = [s for (h, a), data in zip(jobs, lists) for s in to_sessions(h, a, data)]
+        past = [s for h, data in zip(up, histories)
+                for s in to_past(h, accounts[h], data, {x.id for x in live if x.host == h})]
     down = [Session(h, NO_CSWAP, "", "unreachable", "", "", 0) for h in hosts if accounts[h] is None]
-    return sessions + down, accounts
+    return live + past + down, accounts
 
 
 def matches(s: Session, query: str) -> bool:

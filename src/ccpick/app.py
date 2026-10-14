@@ -13,10 +13,10 @@ from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Input, OptionList
 
 from ccpick import __version__
-from ccpick.sessions import attach, claude_cmd, gather, matches, switch
+from ccpick.sessions import attach, claude_cmd, gather, matches, resume_background, switch
 
 STATE_STYLE = {"working": "green", "blocked": "bold yellow", "done": "dim", "failed": "red",
-               "stopped": "dim red", "unreachable": "red"}
+               "stopped": "dim red", "unreachable": "red", "past": "italic dim"}
 
 
 def age(ms: int) -> str:
@@ -93,8 +93,10 @@ class Picker(App):
 
     def show(self, sessions: list, accounts: dict) -> None:
         self.sessions, self.accounts = sessions, accounts
-        n = sum(1 for s in sessions if s.id)
-        self.sub_title = f"{n} sessions on {len(self.hosts)} host{'s' * (len(self.hosts) > 1)}"
+        past = sum(1 for s in sessions if s.state == "past")
+        live = sum(1 for s in sessions if s.id) - past
+        hosts = f"{len(self.hosts)} host{'s' * (len(self.hosts) > 1)}"
+        self.sub_title = f"{live} background, {past} past on {hosts}"
         self.refilter()
 
     def refilter(self) -> None:
@@ -127,8 +129,21 @@ class Picker(App):
         s = self.selected()
         if s is None or not s.id:
             self.bell()
-            return
-        self.run_remote(s.host, claude_cmd(s.account, f"attach {shlex.quote(s.id)}"))
+        elif s.state == "past":
+            self.resume(s)
+        else:
+            self.run_remote(s.host, claude_cmd(s.account, f"attach {shlex.quote(s.id)}"))
+
+    def resume(self, s) -> None:
+        """Continue a past conversation as a background session, then attach to it."""
+        with self.suspend():
+            print(f"Resuming '{s.name}' on {s.host} as a background session...")
+            short, message = resume_background(s)
+            if short:
+                attach(s.host, claude_cmd(s.account, f"attach {shlex.quote(short)}"))
+            else:
+                input(f"Could not resume: {message}\nPress Enter to go back. ")
+        self.load()
 
     def action_new(self) -> None:
         """Open agent view on the selected host, asking for the account when there are several."""
