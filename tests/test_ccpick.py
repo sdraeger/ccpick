@@ -63,6 +63,20 @@ def test_gather_lists_every_account_and_marks_unreachable_hosts(monkeypatch):
     assert accounts == {"h": [WORK, HOME], "down": None}
 
 
+def test_switch_runs_cswap_switch_and_reports_failures(monkeypatch):
+    seen = []
+
+    class R:
+        def __init__(self, code, out):
+            self.returncode, self.stdout, self.stderr = code, out, "bash: no job control in this shell\n"
+
+    replies = iter([R(0, "Switched to me@home.net\n"), R(1, "Error: account 2 needs re-login\n")])
+    monkeypatch.setattr(sessions.subprocess, "run", lambda args, **k: seen.append(args[-1]) or next(replies))
+    assert sessions.switch("h", HOME) == (True, "Switched to me@home.net")
+    assert sessions.switch("h", HOME) == (False, "Error: account 2 needs re-login")
+    assert "cswap switch 2" in seen[0]
+
+
 def test_matches_requires_every_word():
     s = Session("gpu1", HOME, "id", "done", "Old paper", "/w/old", 1)
     assert matches(s, "gpu1 HOME paper")
@@ -84,6 +98,7 @@ def test_tui_filters_attaches_and_asks_for_the_account(monkeypatch):
     async def run():
         picker = app.Picker(["h", "down"])
         picker.run_remote = lambda host, cmd: calls.append((host, cmd))
+        picker.swap = lambda host, a: calls.append(("swap", host, a.slot))
         async with picker.run_test() as pilot:
             await picker.workers.wait_for_complete()
             await pilot.pause()
@@ -94,7 +109,10 @@ def test_tui_filters_attaches_and_asks_for_the_account(monkeypatch):
             await pilot.press(*["backspace"] * 4, "ctrl+n")  # account picker opens
             await pilot.press("down", "enter")
             await pilot.pause()
+            await pilot.press("ctrl+s", "enter")  # swap preselects the non-default account
+            await pilot.pause()
             await pilot.press("escape")
 
     asyncio.run(run())
-    assert calls == [("h", "cswap run 2 -- attach aaaa1111"), ("h", "cswap run 2 -- agents")]
+    assert calls == [("h", "cswap run 2 -- attach aaaa1111"), ("h", "cswap run 2 -- agents"),
+                     ("swap", "h", 2)]

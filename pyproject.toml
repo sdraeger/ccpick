@@ -1,6 +1,6 @@
 [project]
 name = "ccpick"
-version = "0.2.0"
+version = "0.3.0"
 description = "Browse and attach to Claude Code background sessions on your SSH hosts"
 readme = "README.md"
 license = "MIT"

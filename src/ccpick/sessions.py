@@ -1,6 +1,7 @@
 """Read Claude Code sessions from SSH hosts and attach to them."""
 
 import json
+import re
 import shlex
 import subprocess
 import sys
@@ -9,6 +10,8 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import NamedTuple, Optional
 
 SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
+# What an interactive shell without a terminal (`$SHELL -lic` over ssh) prints to stderr.
+JOB_CONTROL_NOISE = re.compile(r"cannot set terminal process group|no job control in this shell")
 # Prints "{}" when the host has no cswap, so ccpick falls back to plain `claude`.
 ACCOUNTS_CMD = "command -v cswap >/dev/null && cswap list --json || echo '{}'"
 
@@ -55,14 +58,29 @@ def parse_json(out: str):
     return None
 
 
-def run_json(host: str, cmd: str):
-    """Parsed JSON from cmd on host, or None if ssh fails or prints no JSON."""
+def ssh_run(host: str, cmd: str, timeout: int = 30) -> Optional[subprocess.CompletedProcess]:
+    """cmd on host without a terminal, or None on timeout."""
     try:
-        r = subprocess.run(["ssh", *SSH_OPTS, host, remote(cmd)], capture_output=True, text=True,
-                           timeout=30, stdin=subprocess.DEVNULL)
+        return subprocess.run(["ssh", *SSH_OPTS, host, remote(cmd)], capture_output=True, text=True,
+                              timeout=timeout, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
         return None
-    return parse_json(r.stdout)
+
+
+def run_json(host: str, cmd: str):
+    """Parsed JSON from cmd on host, or None if ssh fails or prints no JSON."""
+    r = ssh_run(host, cmd)
+    return parse_json(r.stdout) if r else None
+
+
+def switch(host: str, account: Account) -> tuple:
+    """Make account the host's default login with `cswap switch`; (ok, last output line)."""
+    r = ssh_run(host, f"cswap switch {account.slot}", timeout=60)
+    if r is None:
+        return False, "timed out"
+    lines = [line for line in (r.stdout + r.stderr).splitlines()
+             if line.strip() and not JOB_CONTROL_NOISE.search(line)]
+    return r.returncode == 0, lines[-1] if lines else ""
 
 
 def usage_text(u: dict) -> str:

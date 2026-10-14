@@ -33,6 +33,7 @@ ccpick --list gpu1                 # tab-separated: host, account, id, state, na
 | `↑` `↓` | move |
 | `Enter` | attach to the session |
 | `Ctrl+N` | start a session on the selected host: opens its agent view, after asking which account when it has several |
+| `Ctrl+S` | swap the selected host's default cswap account (`cswap switch`); the first other account is preselected, so `Ctrl+S` `Enter` swaps |
 | `Ctrl+R` | refresh |
 | `Esc` | quit |
 
@@ -45,6 +46,7 @@ If a host has [claude-swap](https://github.com/realiti4/claude-swap) (`cswap`), 
 - lists the sessions of every account, with the account in its own column
 - attaches through `cswap run <n> -- attach <id>`, so a session keeps its account
 - asks which account a new session should use, showing each account's 5-hour and 7-day usage and which one is the host's default login
+- swaps the host's default account with `Ctrl+S`. Sessions on the default login, and plain `claude` on that host, move to the new account; sessions started on another account stay on it
 
 Listing an account that isn't the default runs `cswap run <n>`, which sets up that account's session profile on the host the first time. Hosts without cswap use plain `claude`.
 

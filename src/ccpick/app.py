@@ -13,7 +13,7 @@ from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Input, OptionList
 
 from ccpick import __version__
-from ccpick.sessions import attach, claude_cmd, gather, matches
+from ccpick.sessions import attach, claude_cmd, gather, matches, switch
 
 STATE_STYLE = {"working": "green", "blocked": "bold yellow", "done": "dim", "failed": "red",
                "stopped": "dim red", "unreachable": "red"}
@@ -35,7 +35,7 @@ class Filter(Input):
 
 
 class AccountPicker(ModalScreen):
-    """Choose the cswap account for a new session; dismisses with the Account or None."""
+    """Choose a cswap account; dismisses with the Account or None."""
 
     DEFAULT_CSS = """
     AccountPicker { align: center middle; }
@@ -43,15 +43,18 @@ class AccountPicker(ModalScreen):
     """
     BINDINGS = [Binding("escape", "dismiss", "Cancel")]
 
-    def __init__(self, host: str, accounts: list):
+    def __init__(self, title: str, accounts: list, highlight: int = 0):
         super().__init__()
-        self.host, self.accounts = host, accounts
+        self.title, self.accounts, self.highlight = title, accounts, highlight
 
     def compose(self) -> ComposeResult:
         w = max(len(a.label) for a in self.accounts)
         options = OptionList(*[f"{a.label:<{w}}   {a.usage}{'   (default)' * a.active}" for a in self.accounts])
-        options.border_title = f"New session on {self.host} as"
+        options.border_title = self.title
         yield options
+
+    def on_mount(self) -> None:
+        self.query_one(OptionList).highlighted = self.highlight
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         self.dismiss(self.accounts[event.option_index])
@@ -61,6 +64,7 @@ class Picker(App):
     TITLE = "ccpick"
     BINDINGS = [
         Binding("ctrl+n", "new", "New session", priority=True),
+        Binding("ctrl+s", "swap", "Swap account", priority=True),
         Binding("ctrl+r", "reload", "Refresh"),
         Binding("escape", "quit", "Quit"),
     ]
@@ -130,8 +134,7 @@ class Picker(App):
         """Open agent view on the selected host, asking for the account when there are several."""
         if isinstance(self.screen, AccountPicker):
             return
-        s = self.selected()
-        host = s.host if s else self.hosts[0]
+        host = self.current_host()
         accounts = self.accounts.get(host)
         if not accounts:
             self.bell()
@@ -139,8 +142,34 @@ class Picker(App):
         if len(accounts) == 1:
             self.run_remote(host, claude_cmd(accounts[0], "agents"))
             return
-        self.push_screen(AccountPicker(host, accounts),
+        self.push_screen(AccountPicker(f"New session on {host} as", accounts),
                          lambda a: a and self.run_remote(host, claude_cmd(a, "agents")))
+
+    def action_swap(self) -> None:
+        """Set the host's default cswap account; the first non-default one is preselected."""
+        if isinstance(self.screen, AccountPicker):
+            return
+        host = self.current_host()
+        accounts = [a for a in self.accounts.get(host) or [] if a.slot]
+        if len(accounts) < 2:
+            self.notify(f"{host} has no other cswap account to swap to", severity="warning")
+            return
+        other = next((i for i, a in enumerate(accounts) if not a.active), 0)
+        self.push_screen(AccountPicker(f"Default account on {host}", accounts, other),
+                         lambda a: a and not a.active and self.swap(host, a))
+
+    @work(thread=True, group="swap")
+    def swap(self, host: str, account) -> None:
+        ok, message = switch(host, account)
+        if ok:
+            self.call_from_thread(self.notify, f"{host}: default account is now {account.label}")
+            self.call_from_thread(self.load)
+        else:
+            self.call_from_thread(self.notify, f"{host}: cswap switch failed: {message}", severity="error")
+
+    def current_host(self) -> str:
+        s = self.selected()
+        return s.host if s else self.hosts[0]
 
     def run_remote(self, host: str, cmd: str) -> None:
         with self.suspend():
